@@ -56,7 +56,7 @@ def buildKeyFromFeature(feature):
   for field in matchingFields:
     value = feature.GetField(field)
     if not value:
-      raise Exception('missing field %s on feature %s' % (field, feature))
+      values[field] = None
     else:
       values[field] = value
 
