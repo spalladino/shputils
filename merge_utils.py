@@ -47,7 +47,7 @@ def getActualProperty(collection, propName):
     return getActualPropertyFromSchemaDict(collection.schema, propName)
  
 def filterSchemaDict(newSchema, keys):
-  matchingFields = [getActualPropertyFromSchemaDict(newSchema, f.upper()) for f in keys]
+  matchingFields = [getActualPropertyFromSchemaDict(newSchema, f).upper() for f in keys]
   newSchema['properties'] = dict((key,value) for key, value in newSchema['properties'].iteritems() if str(key).upper() in matchingFields)
   return newSchema
 
