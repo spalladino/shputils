@@ -54,7 +54,7 @@ def buildKeyFromFeature(feature):
     return '{}'
 
   for field in matchingFields:
-    value = feature.GetField(field)
+    value = feature['properties'][field]
     if not value:
       values[field] = None
     else:
@@ -71,57 +71,45 @@ def processInput():
   layer = ds.GetLayer(0)
   featureDefinition = layer.GetLayerDefn()
 
-  with collection(options.input, 'r') as input:
-    if not options.fields and not options.all:
-      print "no matching fields specified, and --all not specified, please specify some with -f"
-      sys.exit(1)
-    if options.fields:
-      matchingFields = [getActualProperty(layer, f) for f in options.fields.split(',')]
-    # originalSchema = input.schema.copy()
+  input = collection(options.input, 'r')
+  if not options.fields and not options.all:
+    print "no matching fields specified, and --all not specified, please specify some with -f"
+    sys.exit(1)
+  if options.fields:
+    matchingFields = [getActualProperty(layer, f) for f in options.fields.split(',')]
+  originalSchema = input.schema.copy()
 
-    # awful hack to get a fiona-like schema from ogr
-    originalSchema = {}
-    def getTypeName(fieldDef):
-      if fieldDef.GetType() == ogr.OFTInteger:
-        return 'int'
-      if fieldDef.GetType() == ogr.OFTString:
-        return 'str'
-      if fieldDef.GetType() == ogr.OFTReal:
-        return 'float'
-
-    originalSchema['properties'] = dict([(featureDefinition.GetFieldDefn(i).GetName(), getTypeName(featureDefinition.GetFieldDefn(i))) for i in xrange(featureDefinition.GetFieldCount())])
-
-    print "original schema"
-    print '  %s' % originalSchema
-    origFieldNames = originalSchema["properties"].keys()
-    newSchema = filterSchemaDict(originalSchema, matchingFields)
-    newSchema['geometry'] = 'MultiPolygon' 
-    inputCRS = input.crs
-    
-    
-    clist = list(options.collectors)
-    for i, c in enumerate(clist):
-        if c[0] == '*':
-            # remove special keyword filter from list
-            del clist[i]
-            # push all fields into list
-            # TODO throw error if more than 2 elements in : separated string (c)
-            for field in origFieldNames:
-                # formated like: origfield:operation:outfield_operation
-                x = field + ":" + c[2:] + ":" + c[2:].upper() + "_" + field
-                print x
-                clist.append( x )
-                
-    print clist
-    
-    collectors = Collectors(input, clist)
-    collectors.addToFionaSchema(newSchema)
-    print 'grouping by: %s' % matchingFields
+  print "original schema"
+  print '  %s' % originalSchema
+  origFieldNames = originalSchema["properties"].keys()
+  newSchema = filterSchemaDict(originalSchema, matchingFields)
+  newSchema['geometry'] = 'MultiPolygon' 
+  inputCRS = input.crs
+  
+  
+  clist = list(options.collectors)
+  for i, c in enumerate(clist):
+    if c[0] == '*':
+      # remove special keyword filter from list
+      del clist[i]
+      # push all fields into list
+      # TODO throw error if more than 2 elements in : separated string (c)
+      for field in origFieldNames:
+        # formated like: origfield:operation:outfield_operation
+        x = field + ":" + c[2:] + ":" + c[2:].upper() + "_" + field
+        print x
+        clist.append(x)
+              
+  print 'collectors: %s' % clist
+  
+  collectors = Collectors(input, clist)
+  collectors.addToFionaSchema(newSchema)
+  print 'grouping by: %s' % matchingFields
 
   print "modified schema:"
   print '  %s' % newSchema
 
-  print 'examining %s, with %d features' % (options.input, layer.GetFeatureCount())
+  print 'examining %s, with %d features' % (options.input, len(input))
   featuresSeen = 0
 
   def printFeature(f):
@@ -131,14 +119,12 @@ def processInput():
       print "\t%s:%s = %s" % (
         fieldDefinition.GetName(), fieldDefinition.GetType(), f.GetField(fieldIndex))
 
-  # using raw shapely here because fiona barfs on invalid geoms in the shapefile
-  while True:
-    f = layer.GetNextFeature()
+  for f in input:
     if f is None: break
-    g = f.geometry()
+    g = f['geometry']
     featuresSeen += 1
     if g is not None:
-      geom = loads(g.ExportToWkb()).buffer(0)
+      geom = shape(g).buffer(0)
       if not geom.is_valid:
         print 'SKIPPING invalid geometry for:'
         printFeature(f)
@@ -147,15 +133,15 @@ def processInput():
         groupKey = buildKeyFromFeature(f)
         collectors.recordMatch(groupKey, f)
         geometryBuckets[groupKey].append(geom)
-
+ 
   print 'saw %d features, made %d dissolved features' % (featuresSeen, len(geometryBuckets))
 
   with collection(
-      options.output, 'w', 'ESRI Shapefile', newSchema, crs=inputCRS) as output:
+      options.output, 'w', 'ESRI Shapefile', newSchema, crs=inputCRS, encoding='utf-8') as output:
+    output.encoding = 'utf-8'
     for key, value in geometryBuckets.items():
       merged = cascaded_union(value)
       properties = json.loads(key)
-      #print properties
       #TODO: multiple collectors
       #TODO: * collectors
       collectors.outputMatchesToDict(key, properties)
