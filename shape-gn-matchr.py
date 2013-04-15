@@ -56,7 +56,7 @@ def levenshtein(a,b):
 
 
 format = '%(name)s - %(levelname)s - %(message)s'
-logging.basicConfig(level=logging.DEBUG, filename='debug.log', format=format)
+logging.basicConfig(level=logging.INFO, filename='debug.log', format=format)
 
 logger = logging.getLogger('gn_matcher')
 
@@ -159,19 +159,24 @@ def main():
   num_elems = len(inputIter)
   num_matched = 0
   num_failed = 0
+  num_skipped = 0
   num_ambiguous = 0
   num_fallback = 0
+  num_zero_candidates = 0
 
   for i,f in enumerate(inputIter):
     if i % 1000 == 0:
-      sys.stderr.write('finished %d of %d (success %s (fallback: %s), ambiguous: %s, failed %s)\n' % (i, num_elems, num_matched, num_fallback, num_ambiguous, num_failed))
+      sys.stderr.write('finished %d of %d (success %s (fallback: %s), ambiguous: %s, skipped %s, failed %s (zero-candidates: %s))\n' % (i, num_elems, num_matched, num_fallback, num_ambiguous, num_skipped, num_failed, num_zero_candidates))
     # Make a shapely object from the dict.
     geom = shape(f['geometry'])
     if not geom.is_valid:
       # Use the 0-buffer polygon cleaning trick
       clean = geom.buffer(0.0)
       geom = clean
-    if geom.is_valid:
+    if f["geometry"]["type"] not in ('Polygon', 'MultiPolygon'):
+      print 'skipping %s due to it not being a polygon -- you could fix this with a radius if you wanted' % get_feature_debug(f)
+      num_skipped += 1
+    elif geom.is_valid:
       cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
       cur.execute("""select * FROM geoname WHERE the_geom && ST_SetSRID(ST_MakeBox2D(ST_MakePoint(%s, %s), ST_MakePoint(%s, %s)), 4326) AND (fclass IN %s OR fcode IN %s)""",
         (
@@ -188,6 +193,8 @@ def main():
       rows = cur.fetchall()
 
       matchLogger.error(u'found 0 candidates for %s' % (get_feature_debug(f)))
+      failureLogger.error(u'found 0 candidates for %s' % (get_feature_debug(f)))
+      num_zero_candidates += 1
       for gn_candidate in rows:
         if does_feature_match(f, gn_candidate):
           matches.append(gn_candidate)
@@ -204,7 +211,7 @@ def main():
       if len(final_matches) == 0:
         f['geonameid'] = None
         failureLogger.error(u'found 0 match for %s' % (get_feature_debug(f)))
-        for m in failures:
+        for m in rows:
           failureLogger.error('\t' + geoname_debug_str(m))
         num_failed += 1
       elif len(final_matches) == 1:
