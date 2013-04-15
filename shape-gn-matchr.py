@@ -61,7 +61,7 @@ def levenshtein(a,b):
 
 
 format = '%(name)s - %(levelname)s - %(message)s'
-logging.basicConfig(level=logging.INFO, filename='debug.log', format=format)
+logging.basicConfig(level=logging.DEBUG, filename='debug.log', format=format)
 
 logger = logging.getLogger('gn_matcher')
 
@@ -73,10 +73,6 @@ ambiguousLogger = logging.getLogger('ambiguous')
 ambiguousLogger.addHandler(ambiguoush)
 failureLogger = logging.getLogger('failure')
 failureLogger.addHandler(failureh)
-
-def hack_feature_name(n):
-  n = n.replace('(Rhld.)', '')
-  return n
 
 def remove_diacritics(char):
     '''
@@ -94,7 +90,13 @@ def remove_accents(input_str):
     return u"".join([c for c in nkfd_form if not unicodedata.combining(c)])
 
 def hacks(n):
+  # fix "Vaivanos,Los"
   n = re.sub(r'(.*)(\w),(\w+)', r'\3 \1\2', n)
+  n = n.lower()
+  # fix german name weirndesses
+  n = n.replace(u'(rhld.)', u'')
+  n = n.replace(u', stadt', u'')
+  n = n.replace(u'am main', u'')
   return n
 
 def get_feature_names(f):
@@ -111,8 +113,12 @@ def get_feature_names(f):
 def get_geoname_names_for_matching(gn_candidate):
   feature_names = filter(None, [gn_candidate['name'], gn_candidate['asciiname']] + (gn_candidate['alternatenames'] or '').split(','))
   feature_names = [n.decode('utf-8') for n in feature_names]
-  if gn_candidate['cc2'] == 'DE':
+  if gn_candidate['country'] == 'DE':
     feature_names = [re.sub(' \(.*\)', '', n) for n in feature_names]
+
+  # hack specific to some input data that looks like "Navoculas,Los"
+  feature_names = [hacks(n) for n in feature_names]
+
   feature_names = [remove_accents(n).lower() for n in feature_names]
   return feature_names
 
