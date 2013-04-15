@@ -97,7 +97,10 @@ def hacks(n):
   n = n.replace(u'(rhld.)', u'')
   n = n.replace(u', stadt', u'')
   n = n.replace(u'am main', u'')
-  return n
+  n = n.replace(u'st.', u'saint')
+  n = n.replace(u'ste.', u'sainte')
+  n = n.replace(u'ß', u'ss')
+  n = n.replace(u'es ', u'')
 
 def get_feature_names(f):
   feature_names = filter(None, [f['properties'][col] for col in shp_name_cols])
