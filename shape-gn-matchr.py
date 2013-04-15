@@ -4,7 +4,7 @@ import logging
 import sys
 
 from shapely.geometry import mapping, shape
-from shapely.geometry import Point
+from shapely.geometry import Point, Polygon
 
 from fiona import collection
 
@@ -61,9 +61,7 @@ logging.basicConfig(level=logging.INFO, filename='debug.log', format=format)
 logger = logging.getLogger('gn_matcher')
 
 failureh = logging.FileHandler('failure.log')
-failureh.setLevel(logging.DEBUG)
 ambiguoush = logging.FileHandler('ambiguous.log')
-ambiguoush.setLevel(logging.DEBUG)
 
 matchLogger = logging.getLogger('match')
 ambiguousLogger = logging.getLogger('ambiguous')
@@ -90,11 +88,19 @@ def remove_accents(input_str):
     nkfd_form = unicodedata.normalize('NFKD', input_str)
     return u"".join([c for c in nkfd_form if not unicodedata.combining(c)])
 
+def hacks(n):
+  n = re.sub(r'(.*)(\w),(\w+)', r'\3 \1\2', n)
+  return n
+
 def get_feature_names(f):
   feature_names = filter(None, [f['properties'][col] for col in shp_name_cols])
   if f['properties'][shp_cc_col] == 'DE':
     feature_names = [re.sub(' \(.*\)', '', n) for n in feature_names]
   feature_names = [remove_accents(n).lower() for n in feature_names]
+
+  # hack specific to some input data that looks like "Navoculas,Los"
+  feature_names = [hacks(n) for n in feature_names]
+
   return feature_names
 
 def get_geoname_names_for_matching(gn_candidate):
@@ -125,7 +131,10 @@ def does_feature_match(f, gn_candidate):
 
 def get_feature_name(f):
   feature_names = filter(None, [f['properties'][col] for col in shp_name_cols])
-  return feature_names[0]
+  if feature_names:
+    return feature_names[0]
+  else:
+    return 'name_missing'
 
 def get_geoname_name(gn):
   return gn['name'].decode('utf-8')
@@ -144,6 +153,17 @@ def geoname_debug_str(gn):
 
 def get_feature_debug(f):
   return u"%s (%s)" % (get_feature_name(f), shape(f['geometry']).centroid)
+
+def bbox_polygon(bbox):
+  """
+  Create Polygon that covers the given bbox.
+  """
+  return Polygon((
+    (bbox[0], bbox[1]),
+    (bbox[2], bbox[1]),
+    (bbox[2], bbox[3]),
+    (bbox[0], bbox[3]),
+  ))
 
 def main():
   input = collection(inputFile, "r")
@@ -177,13 +197,14 @@ def main():
       print 'skipping %s due to it not being a polygon -- you could fix this with a radius if you wanted' % get_feature_debug(f)
       num_skipped += 1
     elif geom.is_valid:
+      expanded_bounds = bbox_polygon(geom.bounds).buffer(0.1)
       cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
       cur.execute("""select * FROM geoname WHERE the_geom && ST_SetSRID(ST_MakeBox2D(ST_MakePoint(%s, %s), ST_MakePoint(%s, %s)), 4326) AND (fclass IN %s OR fcode IN %s)""",
         (
-          geom.bounds[0],
-          geom.bounds[1],
-          geom.bounds[2],
-          geom.bounds[3],
+          expanded_bounds.bounds[0],
+          expanded_bounds.bounds[1],
+          expanded_bounds.bounds[2],
+          expanded_bounds.bounds[3],
           tuple(allowed_gn_classes + fallback_allowed_gn_classes),
           tuple(allowed_gn_codes + fallback_allowed_gn_codes)
         )
@@ -192,8 +213,8 @@ def main():
       failures = []
       rows = cur.fetchall()
 
-      matchLogger.error(u'found 0 candidates for %s' % (get_feature_debug(f)))
-      failureLogger.error(u'found 0 candidates for %s' % (get_feature_debug(f)))
+      matchLogger.error(u'found 0 candidates for %s %s' % (get_feature_debug(f), geom.bounds))
+      failureLogger.error(u'found 0 candidates for %s %s' % (get_feature_debug(f), geom.bounds))
       num_zero_candidates += 1
       for gn_candidate in rows:
         if does_feature_match(f, gn_candidate):
@@ -210,7 +231,7 @@ def main():
 
       if len(final_matches) == 0:
         f['geonameid'] = None
-        failureLogger.error(u'found 0 match for %s' % (get_feature_debug(f)))
+        failureLogger.error(u'found 0 matches for %s' % (get_feature_debug(f)))
         for m in rows:
           failureLogger.error('\t' + geoname_debug_str(m))
         num_failed += 1
