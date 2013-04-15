@@ -16,6 +16,9 @@ import psycopg2.extras
 import re
 import unicodedata
 
+from collections import defaultdict
+
+# pull actual alternate names so commas don't fuck us
 
 # these should all be command-line opts, I am feeling lazy
 conn = psycopg2.connect("dbname='geonames' user='blackmad' host='localhost' password='xxx'")
@@ -26,6 +29,8 @@ allowed_gn_codes = []
 
 fallback_allowed_gn_classes = []
 fallback_allowed_gn_codes = ['ADM4']
+
+buffer_expand = 0.075
  
 inputFile = sys.argv[1] 
 outputFile = sys.argv[2] 
@@ -123,11 +128,11 @@ def does_feature_match(f, gn_candidate):
       logger.debug(u'%s vs %s -- distance %d' % (f_name, gn_name, distance))
       if distance <= 1 or ((distance*1.0) / len(f_name) < 0.14):
         matchLogger.debug(u'%s vs %s -- distance %d -- GOOD ENOUGH' % (f_name, gn_name, distance))
-        return True
+        return (True, distance)
       else:
         matchLogger.debug(u'%s vs %s -- distance %d -- NO' % (f_name, geoname_debug_str(gn_candidate), distance))
 
-  return False
+  return (False, -1)
 
 def get_feature_name(f):
   feature_names = filter(None, [f['properties'][col] for col in shp_name_cols])
@@ -197,7 +202,7 @@ def main():
       print 'skipping %s due to it not being a polygon -- you could fix this with a radius if you wanted' % get_feature_debug(f)
       num_skipped += 1
     elif geom.is_valid:
-      expanded_bounds = bbox_polygon(geom.bounds).buffer(0.1)
+      expanded_bounds = bbox_polygon(geom.bounds).buffer(buffer_expand)
       cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
       cur.execute("""select * FROM geoname WHERE the_geom && ST_SetSRID(ST_MakeBox2D(ST_MakePoint(%s, %s), ST_MakePoint(%s, %s)), 4326) AND (fclass IN %s OR fcode IN %s)""",
         (
@@ -209,21 +214,28 @@ def main():
           tuple(allowed_gn_codes + fallback_allowed_gn_codes)
         )
       )
-      matches = []
+      matches = defaultdict(list)
       failures = []
       rows = cur.fetchall()
 
-      matchLogger.error(u'found 0 candidates for %s %s' % (get_feature_debug(f), geom.bounds))
-      failureLogger.error(u'found 0 candidates for %s %s' % (get_feature_debug(f), geom.bounds))
-      num_zero_candidates += 1
+      if len(rows) == 0:
+        matchLogger.error(u'found 0 candidates for %s %s' % (get_feature_debug(f), geom.bounds))
+        failureLogger.error(u'found 0 candidates for %s %s' % (get_feature_debug(f), geom.bounds))
+        num_zero_candidates += 1
       for gn_candidate in rows:
-        if does_feature_match(f, gn_candidate):
-          matches.append(gn_candidate)
+        (doesMatch, distance) = does_feature_match(f, gn_candidate)
+        if doesMatch:
+          matches[distance].append(gn_candidate)
         else:
           failures.append(gn_candidate)
 
-      final_matches = filter(lambda gn_candidate: (get_geoname_fclass(gn_candidate) in allowed_gn_classes) or (get_geoname_fcode(gn_candidate) in allowed_gn_codes), matches)
-      fallback_matches = filter(lambda gn_candidate: (get_geoname_fclass(gn_candidate) in fallback_allowed_gn_classes) or (get_geoname_fcode(gn_candidate) in fallback_allowed_gn_codes), matches)
+      best_matches = []
+      if len(matches):
+        matchLogger.debug('had matches of distances: %s' % matches.keys())
+        best_matches = matches[min(matches.keys())]
+
+      final_matches = filter(lambda gn_candidate: (get_geoname_fclass(gn_candidate) in allowed_gn_classes) or (get_geoname_fcode(gn_candidate) in allowed_gn_codes), best_matches)
+      fallback_matches = filter(lambda gn_candidate: (get_geoname_fclass(gn_candidate) in fallback_allowed_gn_classes) or (get_geoname_fcode(gn_candidate) in fallback_allowed_gn_codes), best_matches)
       if len(final_matches) == 0 and len(fallback_matches) > 0:
         matchLogger.debug('0 preferred type matches, falling back to fallback match types')
         final_matches = fallback_matches
