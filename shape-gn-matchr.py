@@ -13,6 +13,7 @@ import itertools
 import psycopg2
 import psycopg2.extras
 
+import re
 
 # these should all be command-line opts, I am feeling lazy
 conn = psycopg2.connect("dbname='geonames' user='blackmad' host='localhost' password='xxx'")
@@ -58,19 +59,37 @@ fh.setFormatter(formatter)
 
 failureh = logging.FileHandler('failure.log')
 failureh.setLevel(logging.DEBUG)
+ambiguoush = logging.FileHandler('ambiguous.log')
+ambiguoush.setLevel(logging.DEBUG)
 
 matchLogger = logging.getLogger('match')
 ambiguousLogger = logging.getLogger('ambiguous')
+ambiguousLogger.addHandler(ambiguoush)
 failureLogger = logging.getLogger('failure')
 failureLogger.addHandler(failureh)
 loggers = [matchLogger, ambiguousLogger, failureLogger]
 for l in loggers:
   l.addHandler(fh)
 
+def hack_feature_name(n):
+  n = n.replace('(Rhld.)', '')
+  return n
+
+def get_feature_names(f):
+  feature_names = filter(None, [f['properties'][col] for col in shp_name_cols])
+  return feature_names
+
+def get_geoname_names_for_matching(gn_candidate):
+  feature_names = filter(None, [gn_candidate['name'], gn_candidate['asciiname']] + (gn_candidate['alternatenames'] or '').split(','))
+  if gn_candidate['cc2'] == 'DE':
+    feature_names = [re.sub(' \(.*\)', '', n) for n in feature_names]
+  return feature_names
+
 def does_feature_match(f, gn_candidate):
   point = Point(gn_candidate['latitude'], gn_candidate['longitude'])
-  candidate_names = filter(None, [gn_candidate['name'], gn_candidate['asciiname']] + (gn_candidate['alternatenames'] or '').split(','))
-  feature_names = filter(None, [f['properties'][col] for col in shp_name_cols])
+  candidate_names = get_geoname_names_for_matching(gn_candidate)
+  feature_names = get_feature_names(f)
+
   # for each input name in the shape, see if we have a match in a geoname feature
   for f_name in feature_names:
     for gn_name in candidate_names:
@@ -130,21 +149,26 @@ def main():
       cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
       cur.execute("""select * FROM geoname WHERE the_geom && ST_SetSRID(ST_MakeBox2D(ST_MakePoint(%s, %s), ST_MakePoint(%s, %s)), 4326)""", geom.bounds)
       matches = []
+      failures = []
       for gn_candidate in cur.fetchall():
         if does_feature_match(f, gn_candidate):
           matches.append(gn_candidate)
+        else:
+          failures.append(gn_candidate)
       if len(matches) == 0:
         f['geonameid'] = None
-        failureLogger.info(u'found 0 match for %s' % (get_feature_debug(f)))
+        failureLogger.error(u'found 0 match for %s' % (get_feature_debug(f)))
+        for m in failures:
+          failureLogger.error('\t' + geoname_debug_str(m))
       elif len(matches) == 1:
         m = matches[0]
-        matchLogger.info(u'found 1 match for %s:' % (get_feature_debug(f)))
-        matchLogger.info('\t' + geoname_debug_str(m))
+        matchLogger.debug(u'found 1 match for %s:' % (get_feature_debug(f)))
+        matchLogger.debug('\t' + geoname_debug_str(m))
         f['geonameid'] = ','.join([get_geoname_id(m) for m in matches])
       elif len(matches) > 1:
-        ambiguousLogger.info(u'found multiple matches for %s:' % (get_feature_debug(f)))
+        ambiguousLogger.error(u'found multiple matches for %s:' % (get_feature_debug(f)))
         for m in matches:
-          ambiguousLogger.info('\t' + geoname_debug_str(m))
+          ambiguousLogger.error('\t' + geoname_debug_str(m))
         f['geonameid'] = ','.join([get_geoname_id(m) for m in matches])
 
 main()
