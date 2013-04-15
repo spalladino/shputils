@@ -61,7 +61,7 @@ def levenshtein(a,b):
 
 
 format = '%(name)s - %(levelname)s - %(message)s'
-logging.basicConfig(level=logging.DEBUG, filename='debug.log', format=format)
+logging.basicConfig(level=logging.INFO, filename='debug.log', format=format)
 
 logger = logging.getLogger('gn_matcher')
 
@@ -163,7 +163,8 @@ def geoname_debug_str(gn):
   return u"%s %s %s %s" % (get_geoname_name(gn), get_geoname_id(gn), get_geoname_fclass(gn), get_geoname_fcode(gn))
 
 def get_feature_debug(f):
-  return u"%s (%s)" % (get_feature_name(f), shape(f['geometry']).centroid)
+  return u"%s %s  (%s)" % (get_feature_name(f), f['properties'][shp_cc_col], shape(f['geometry']).bounds)
+
 
 def bbox_polygon(bbox):
   """
