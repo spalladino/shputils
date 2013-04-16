@@ -1,4 +1,5 @@
 #!/usr/bin/python
+# -*- coding: utf-8 -*-
 
 import logging
 import sys
@@ -101,6 +102,7 @@ def hacks(n):
   n = n.replace(u'ste.', u'sainte')
   n = n.replace(u'ß', u'ss')
   n = n.replace(u'es ', u'')
+  return n
 
 def get_feature_names(f):
   feature_names = filter(None, [f['properties'][col] for col in shp_name_cols])
@@ -191,7 +193,10 @@ def main():
   inputIter = input
   if maxFeaturesToProcess:
     inputIter = take(maxFeaturesToProcess, input)
-  num_elems = len(inputIter)
+  if maxFeaturesToProcess:
+    num_elems = maxFeaturesToProcess 
+  else:
+    num_elems = len(inputIter)
   num_matched = 0
   num_failed = 0
   num_skipped = 0
@@ -229,7 +234,6 @@ def main():
       rows = cur.fetchall()
 
       if len(rows) == 0:
-        matchLogger.error(u'found 0 candidates for %s %s' % (get_feature_debug(f), geom.bounds))
         failureLogger.error(u'found 0 candidates for %s %s' % (get_feature_debug(f), geom.bounds))
         num_zero_candidates += 1
       for gn_candidate in rows:
@@ -269,5 +273,6 @@ def main():
           ambiguousLogger.error('\t' + geoname_debug_str(m))
         f['geonameid'] = ','.join([get_geoname_id(m) for m in final_matches])
         num_ambiguous += 1
+      output.write(f)
 
 main()
