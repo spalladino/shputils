@@ -38,6 +38,8 @@ outputFile = sys.argv[2]
 # set to 0 or None to take all
 maxFeaturesToProcess = 0
 
+usePriorGeonamesConcordance = True
+
 def take(n, iterable):
   return itertools.islice(iterable, n)
 
@@ -186,7 +188,7 @@ def main():
   input = collection(inputFile, "r")
 
   newSchema = input.schema.copy()
-  newSchema['geonameid'] = 'str:1000'
+  newSchema['properties']['geonameid'] = 'str:1000'
   output = collection(
     outputFile, 'w', 'ESRI Shapefile', newSchema, crs=input.crs, encoding='utf-8')
 
@@ -203,76 +205,82 @@ def main():
   num_ambiguous = 0
   num_fallback = 0
   num_zero_candidates = 0
+  num_prior_match = 0
 
   for i,f in enumerate(inputIter):
     if i % 1000 == 0:
-      sys.stderr.write('finished %d of %d (success %s (fallback: %s), ambiguous: %s, skipped %s, failed %s (zero-candidates: %s))\n' % (i, num_elems, num_matched, num_fallback, num_ambiguous, num_skipped, num_failed, num_zero_candidates))
-    # Make a shapely object from the dict.
-    geom = shape(f['geometry'])
-    if not geom.is_valid:
-      # Use the 0-buffer polygon cleaning trick
-      clean = geom.buffer(0.0)
-      geom = clean
-    if f["geometry"]["type"] not in ('Polygon', 'MultiPolygon'):
-      print 'skipping %s due to it not being a polygon -- you could fix this with a radius if you wanted' % get_feature_debug(f)
-      num_skipped += 1
-    elif geom.is_valid:
-      expanded_bounds = bbox_polygon(geom.bounds).buffer(buffer_expand)
-      cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-      cur.execute("""select * FROM geoname WHERE the_geom && ST_SetSRID(ST_MakeBox2D(ST_MakePoint(%s, %s), ST_MakePoint(%s, %s)), 4326) AND (fclass IN %s OR fcode IN %s)""",
-        (
-          expanded_bounds.bounds[0],
-          expanded_bounds.bounds[1],
-          expanded_bounds.bounds[2],
-          expanded_bounds.bounds[3],
-          tuple(allowed_gn_classes + fallback_allowed_gn_classes),
-          tuple(allowed_gn_codes + fallback_allowed_gn_codes)
+      sys.stderr.write('finished %d of %d (prior_matches %s success %s (fallback: %s), ambiguous: %s, skipped %s, failed %s (zero-candidates: %s))\n' % (i, num_elems, num_prior_match, num_matched, num_fallback, num_ambiguous, num_skipped, num_failed, num_zero_candidates))
+
+    if 'geonameid' in f['properties'] and f['properties']['geonameid'] and usePriorGeonamesConcordance:
+      pass
+    else:
+      # Make a shapely object from the dict.
+      geom = shape(f['geometry'])
+      if not geom.is_valid:
+        # Use the 0-buffer polygon cleaning trick
+        clean = geom.buffer(0.0)
+        geom = clean
+      if f["geometry"]["type"] not in ('Polygon', 'MultiPolygon'):
+        print 'skipping %s due to it not being a polygon -- you could fix this with a radius if you wanted' % get_feature_debug(f)
+        num_skipped += 1
+      elif geom.is_valid:
+        expanded_bounds = bbox_polygon(geom.bounds).buffer(buffer_expand)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cur.execute("""select * FROM geoname WHERE the_geom && ST_SetSRID(ST_MakeBox2D(ST_MakePoint(%s, %s), ST_MakePoint(%s, %s)), 4326) AND (fclass IN %s OR fcode IN %s)""",
+          (
+            expanded_bounds.bounds[0],
+            expanded_bounds.bounds[1],
+            expanded_bounds.bounds[2],
+            expanded_bounds.bounds[3],
+            tuple(allowed_gn_classes + fallback_allowed_gn_classes),
+            tuple(allowed_gn_codes + fallback_allowed_gn_codes)
+          )
         )
-      )
-      matches = defaultdict(list)
-      failures = []
-      rows = cur.fetchall()
+        matches = defaultdict(list)
+        failures = []
+        rows = cur.fetchall()
 
-      if len(rows) == 0:
-        failureLogger.error(u'found 0 candidates for %s %s' % (get_feature_debug(f), geom.bounds))
-        num_zero_candidates += 1
-      for gn_candidate in rows:
-        (doesMatch, distance) = does_feature_match(f, gn_candidate)
-        if doesMatch:
-          matches[distance].append(gn_candidate)
-        else:
-          failures.append(gn_candidate)
+        if len(rows) == 0:
+          failureLogger.error(u'found 0 candidates for %s %s' % (get_feature_debug(f), geom.bounds))
+          num_zero_candidates += 1
+        for gn_candidate in rows:
+          (doesMatch, distance) = does_feature_match(f, gn_candidate)
+          if doesMatch:
+            matches[distance].append(gn_candidate)
+          else:
+            failures.append(gn_candidate)
 
-      best_matches = []
-      if len(matches):
-        matchLogger.debug('had matches of distances: %s' % matches.keys())
-        best_matches = matches[min(matches.keys())]
+        best_matches = []
+        if len(matches):
+          matchLogger.debug('had matches of distances: %s' % matches.keys())
+          best_matches = matches[min(matches.keys())]
 
-      final_matches = filter(lambda gn_candidate: (get_geoname_fclass(gn_candidate) in allowed_gn_classes) or (get_geoname_fcode(gn_candidate) in allowed_gn_codes), best_matches)
-      fallback_matches = filter(lambda gn_candidate: (get_geoname_fclass(gn_candidate) in fallback_allowed_gn_classes) or (get_geoname_fcode(gn_candidate) in fallback_allowed_gn_codes), best_matches)
-      if len(final_matches) == 0 and len(fallback_matches) > 0:
-        matchLogger.debug('0 preferred type matches, falling back to fallback match types')
-        final_matches = fallback_matches
-        num_fallback += 1
+        final_matches = filter(lambda gn_candidate: (get_geoname_fclass(gn_candidate) in allowed_gn_classes) or (get_geoname_fcode(gn_candidate) in allowed_gn_codes), best_matches)
+        fallback_matches = filter(lambda gn_candidate: (get_geoname_fclass(gn_candidate) in fallback_allowed_gn_classes) or (get_geoname_fcode(gn_candidate) in fallback_allowed_gn_codes), best_matches)
+        if len(final_matches) == 0 and len(fallback_matches) > 0:
+          matchLogger.debug('0 preferred type matches, falling back to fallback match types')
+          final_matches = fallback_matches
+          num_fallback += 1
 
-      if len(final_matches) == 0:
-        f['geonameid'] = None
-        failureLogger.error(u'found 0 matches for %s' % (get_feature_debug(f)))
-        for m in rows:
-          failureLogger.error('\t' + geoname_debug_str(m))
-        num_failed += 1
-      elif len(final_matches) == 1:
-        m = final_matches[0]
-        matchLogger.debug(u'found 1 match for %s:' % (get_feature_debug(f)))
-        matchLogger.debug('\t' + geoname_debug_str(m))
-        f['geonameid'] = ','.join([get_geoname_id(m) for m in final_matches])
-        num_matched += 1
-      elif len(final_matches) > 1:
-        ambiguousLogger.error(u'found multiple final_matches for %s:' % (get_feature_debug(f)))
-        for m in final_matches:
-          ambiguousLogger.error('\t' + geoname_debug_str(m))
-        f['geonameid'] = ','.join([get_geoname_id(m) for m in final_matches])
-        num_ambiguous += 1
+        if len(final_matches) == 0:
+          f['properties']['geonameid'] = None
+          failureLogger.error(u'found 0 matches for %s' % (get_feature_debug(f)))
+          for m in rows:
+            failureLogger.error('\t' + geoname_debug_str(m))
+          num_failed += 1
+        elif len(final_matches) == 1:
+          m = final_matches[0]
+          matchLogger.debug(u'found 1 match for %s:' % (get_feature_debug(f)))
+          matchLogger.debug('\t' + geoname_debug_str(m))
+          f['properties']['geonameid'] = ','.join([get_geoname_id(m) for m in final_matches])
+          num_matched += 1
+        elif len(final_matches) > 1:
+          ambiguousLogger.error(u'found multiple final_matches for %s:' % (get_feature_debug(f)))
+          for m in final_matches:
+            ambiguousLogger.error('\t' + geoname_debug_str(m))
+          f['properties']['geonameid'] = ','.join([get_geoname_id(m) for m in final_matches])
+          num_ambiguous += 1
       output.write(f)
+
 
 main()
