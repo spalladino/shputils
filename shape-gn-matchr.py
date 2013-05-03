@@ -26,6 +26,9 @@ parser.add_option('--allowed_gn_codes', dest='allowed_gn_codes', default='', hel
 parser.add_option('--fallback_allowed_gn_classes', dest='fallback_allowed_gn_classes', default='', help='comma separated list of fallback_allowed geonames feature classes')
 parser.add_option('--fallback_allowed_gn_codes', dest='fallback_allowed_gn_codes', default='ADM4', help='comma separated list of fallback_allowed geonames feature codes')
 
+parser.add_option('--shp_name_keys', dest='name_keys', default='qs_loc,qs_loc_alt', help='comma separated list of keys in shapefile to use for feature name')
+parser.add_option('--shp_cc_key', dest='cc_key', default='CC', help='shapefile column to find countrycode')
+
 parser.add_option('--dbname', dest='dbname', default='geonames', help='postgres dbname')
 parser.add_option('--dbuser', dest='dbuser', default='postgres', help='postgres user')
 parser.add_option('--dbpass', dest='dbpass', default='xxx', help='postgres password')
@@ -37,8 +40,8 @@ parser.add_option('--dbtable', dest='dbtable', default='geoname', help='postgres
 # these should all be command-line opts, I am feeling lazy
 conn = psycopg2.connect("dbname='%s' user='%s' host='%s' password='%s'" % (
   options.dbname, options.dbuser, options.dbhost, options.dbpass))
-shp_name_cols = ['qs_loc', 'qs_loc_alt']
-shp_cc_col = 'qs_iso_cc'
+shp_name_cols = options.name_keys.split(',')
+shp_cc_col = options.cc_key
 
 allowed_gn_classes = options.allowed_gn_classes.split(',')
 allowed_gn_codes = options.allowed_gn_codes.split(',')
@@ -188,12 +191,15 @@ def bbox_polygon(bbox):
   """
   Create Polygon that covers the given bbox.
   """
-  return Polygon((
-    (bbox[0], bbox[1]),
-    (bbox[2], bbox[1]),
-    (bbox[2], bbox[3]),
-    (bbox[0], bbox[3]),
-  ))
+  if (len(bbox) == 4):
+    return Polygon((
+      (bbox[0], bbox[1]),
+      (bbox[2], bbox[1]),
+      (bbox[2], bbox[3]),
+      (bbox[0], bbox[3]),
+    ))
+  else:
+    None
 
 def main():
   input = collection(inputFile, "r")
@@ -221,7 +227,7 @@ def main():
   num_no_name = 0
 
   for i,f in enumerate(inputIter):
-    if i % 1000 == 0:
+    if (i % 1000) == 0:
       sys.stderr.write('finished %d of %d (prior_matches %s success %s (fallback: %s), ambiguous: %s, skipped %s, failed %s (no-name %s, zero-candidates: %s))\n' % (i, num_elems, num_prior_match, num_matched, num_fallback, num_ambiguous, num_skipped, num_failed, num_no_name, num_zero_candidates))
 
     if geonameid_output_column in f['properties'] and f['properties'][geonameid_output_column] and usePriorGeonamesConcordance:
@@ -239,25 +245,37 @@ def main():
         print 'skipping %s due to it not being a polygon -- you could fix this with a radius if you wanted' % get_feature_debug(f)
         num_skipped += 1
       elif geom.is_valid:
-        expanded_bounds = bbox_polygon(geom.bounds).buffer(buffer_expand)
-        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        cur.execute("""select * FROM """ + options.dbtable + """ WHERE the_geom && ST_SetSRID(ST_MakeBox2D(ST_MakePoint(%s, %s), ST_MakePoint(%s, %s)), 4326) AND (fclass IN %s OR fcode IN %s)""",
-          (
-            expanded_bounds.bounds[0],
-            expanded_bounds.bounds[1],
-            expanded_bounds.bounds[2],
-            expanded_bounds.bounds[3],
-            tuple(allowed_gn_classes + fallback_allowed_gn_classes),
-            tuple(allowed_gn_codes + fallback_allowed_gn_codes)
-          )
-        )
         matches = defaultdict(list)
         failures = []
-        rows = cur.fetchall()
+        
+        poly_bounds = bbox_polygon(geom.bounds)
+
+        if not poly_bounds:
+          print "couldn't build poly bounds for %s %s" % (geom, geom.bounds)
+          failureLogger.error(u'could not build bounds for  %s %s' % (get_feature_debug(f), geom.bounds))
+          rows = []
+        else:
+          expanded_bounds = poly_bounds.buffer(buffer_expand)
+
+          cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+          cur.execute("""select * FROM """ + options.dbtable + """ WHERE the_geom && ST_SetSRID(ST_MakeBox2D(ST_MakePoint(%s, %s), ST_MakePoint(%s, %s)), 4326) AND (fclass IN %s OR fcode IN %s)""",
+            (
+              expanded_bounds.bounds[0],
+              expanded_bounds.bounds[1],
+              expanded_bounds.bounds[2],
+              expanded_bounds.bounds[3],
+              tuple(allowed_gn_classes + fallback_allowed_gn_classes),
+              tuple(allowed_gn_codes + fallback_allowed_gn_codes)
+            )
+          )
+          rows = cur.fetchall()
 
         if len(rows) == 0:
           failureLogger.error(u'found 0 candidates for %s %s' % (get_feature_debug(f), geom.bounds))
           num_zero_candidates += 1
+        if len(rows) > 2000:
+          print u'oversized result set: %s rows for %s' % (len(rows), get_feature_debug(f))
+          failureLogger.error(u'oversized result set: %s rows for %s' % (len(rows), get_feature_debug(f)))
         for gn_candidate in rows:
           (doesMatch, distance) = does_feature_match(f, gn_candidate)
           if doesMatch:
