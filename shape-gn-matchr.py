@@ -75,6 +75,7 @@ format = '%(name)s - %(levelname)s - %(message)s'
 logging.basicConfig(level=logging.INFO, filename='debug.log', format=format)
 
 logger = logging.getLogger('gn_matcher')
+
 matchLogger = logging.getLogger('match')
 ambiguousLogger = logging.getLogger('ambiguous')
 failureLogger = logging.getLogger('failure')
@@ -154,7 +155,7 @@ def get_feature_name(f):
   if feature_names:
     return feature_names[0]
   else:
-    return 'name_missing'
+    return None
 
 def get_geoname_name(gn):
   return gn['name'].decode('utf-8')
@@ -209,13 +210,16 @@ def main():
   num_fallback = 0
   num_zero_candidates = 0
   num_prior_match = 0
+  num_no_name = 0
 
   for i,f in enumerate(inputIter):
     if i % 1000 == 0:
-      sys.stderr.write('finished %d of %d (prior_matches %s success %s (fallback: %s), ambiguous: %s, skipped %s, failed %s (zero-candidates: %s))\n' % (i, num_elems, num_prior_match, num_matched, num_fallback, num_ambiguous, num_skipped, num_failed, num_zero_candidates))
+      sys.stderr.write('finished %d of %d (prior_matches %s success %s (fallback: %s), ambiguous: %s, skipped %s, failed %s (no-name %s, zero-candidates: %s))\n' % (i, num_elems, num_prior_match, num_matched, num_fallback, num_ambiguous, num_skipped, num_failed, num_no_name, num_zero_candidates))
 
     if geonameid_output_column in f['properties'] and f['properties'][geonameid_output_column] and usePriorGeonamesConcordance:
       pass
+    elif not get_feature_name(f):
+      num_no_name += 1
     else:
       # Make a shapely object from the dict.
       geom = shape(f['geometry'])
