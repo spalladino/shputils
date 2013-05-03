@@ -25,10 +25,18 @@ parser.add_option('--allowed_gn_classes', dest='allowed_gn_classes', default='P'
 parser.add_option('--allowed_gn_codes', dest='allowed_gn_codes', default='', help='comma separated list of allowed geonames feature codes')
 parser.add_option('--fallback_allowed_gn_classes', dest='fallback_allowed_gn_classes', default='', help='comma separated list of fallback_allowed geonames feature classes')
 parser.add_option('--fallback_allowed_gn_codes', dest='fallback_allowed_gn_codes', default='ADM4', help='comma separated list of fallback_allowed geonames feature codes')
+
+parser.add_option('--dbname', dest='dbname', default='geonames', help='postgres dbname')
+parser.add_option('--dbuser', dest='dbuser', default='postgres', help='postgres user')
+parser.add_option('--dbpass', dest='dbpass', default='xxx', help='postgres password')
+parser.add_option('--dbhost', dest='dbhost', default='localhost', help='postgres host')
+parser.add_option('--dbtable', dest='dbtable', default='geoname', help='postgres table')
+
 (options, args) = parser.parse_args()
 
 # these should all be command-line opts, I am feeling lazy
-conn = psycopg2.connect("dbname='foursquare' user='postgres' host='localhost' password='xxx'")
+conn = psycopg2.connect("dbname='%s' user='%s' host='%s' password='%s'" % (
+  options.dbname, options.dbuser, options.dbhost, options.dbpass))
 shp_name_cols = ['qs_loc', 'qs_loc_alt']
 shp_cc_col = 'qs_iso_cc'
 
@@ -41,8 +49,8 @@ geonameid_output_column = 'qs_gn_id'
 
 buffer_expand = 0.1
  
-inputFile = sys.argv[1] 
-outputFile = sys.argv[2] 
+inputFile = args[0]
+outputFile = args[1]
 # set to 0 or None to take all
 maxFeaturesToProcess = 0
 
@@ -233,7 +241,7 @@ def main():
       elif geom.is_valid:
         expanded_bounds = bbox_polygon(geom.bounds).buffer(buffer_expand)
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        cur.execute("""select * FROM geoname WHERE the_geom && ST_SetSRID(ST_MakeBox2D(ST_MakePoint(%s, %s), ST_MakePoint(%s, %s)), 4326) AND (fclass IN %s OR fcode IN %s)""",
+        cur.execute("""select * FROM """ + options.dbtable + """ WHERE the_geom && ST_SetSRID(ST_MakeBox2D(ST_MakePoint(%s, %s), ST_MakePoint(%s, %s)), 4326) AND (fclass IN %s OR fcode IN %s)""",
           (
             expanded_bounds.bounds[0],
             expanded_bounds.bounds[1],
