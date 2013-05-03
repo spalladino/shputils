@@ -18,20 +18,28 @@ import re
 import unicodedata
 
 from collections import defaultdict
+from optparse import OptionParser
 
-# pull actual alternate names so commas don't fuck us
+parser = OptionParser(usage="""%prog [options]""")
+parser.add_option('--allowed_gn_classes', dest='allowed_gn_classes', default='P', help='comma separated list of allowed geonames feature classes')
+parser.add_option('--allowed_gn_codes', dest='allowed_gn_codes', default='', help='comma separated list of allowed geonames feature codes')
+parser.add_option('--fallback_allowed_gn_classes', dest='fallback_allowed_gn_classes', default='', help='comma separated list of fallback_allowed geonames feature classes')
+parser.add_option('--fallback_allowed_gn_codes', dest='fallback_allowed_gn_codes', default='ADM4', help='comma separated list of fallback_allowed geonames feature codes')
+(options, args) = parser.parse_args()
 
 # these should all be command-line opts, I am feeling lazy
-conn = psycopg2.connect("dbname='geonames' user='blackmad' host='localhost' password='xxx'")
-shp_name_cols = ['qs_name', 'qs_name_al']
+conn = psycopg2.connect("dbname='foursquare' user='postgres' host='localhost' password='xxx'")
+shp_name_cols = ['qs_loc', 'qs_loc_alt']
 shp_cc_col = 'qs_iso_cc'
-allowed_gn_classes = ['P']
-allowed_gn_codes = []
 
-fallback_allowed_gn_classes = []
-fallback_allowed_gn_codes = ['ADM4']
+allowed_gn_classes = options.allowed_gn_classes.split(',')
+allowed_gn_codes = options.allowed_gn_codes.split(',')
+fallback_allowed_gn_classes = options.fallback_allowed_gn_classes.split(',')
+fallback_allowed_gn_codes = options.fallback_allowed_gn_codes.split(',')
 
-buffer_expand = 0.075
+geonameid_output_column = 'qs_gn_id' 
+
+buffer_expand = 0.1
  
 inputFile = sys.argv[1] 
 outputFile = sys.argv[2] 
@@ -67,15 +75,9 @@ format = '%(name)s - %(levelname)s - %(message)s'
 logging.basicConfig(level=logging.INFO, filename='debug.log', format=format)
 
 logger = logging.getLogger('gn_matcher')
-
-failureh = logging.FileHandler('failure.log')
-ambiguoush = logging.FileHandler('ambiguous.log')
-
 matchLogger = logging.getLogger('match')
 ambiguousLogger = logging.getLogger('ambiguous')
-ambiguousLogger.addHandler(ambiguoush)
 failureLogger = logging.getLogger('failure')
-failureLogger.addHandler(failureh)
 
 def remove_diacritics(char):
     '''
@@ -188,7 +190,8 @@ def main():
   input = collection(inputFile, "r")
 
   newSchema = input.schema.copy()
-  newSchema['properties']['geonameid'] = 'str:1000'
+  newSchema['properties'][geonameid_output_column] = 'str:1000'
+
   output = collection(
     outputFile, 'w', 'ESRI Shapefile', newSchema, crs=input.crs, encoding='utf-8')
 
@@ -211,7 +214,7 @@ def main():
     if i % 1000 == 0:
       sys.stderr.write('finished %d of %d (prior_matches %s success %s (fallback: %s), ambiguous: %s, skipped %s, failed %s (zero-candidates: %s))\n' % (i, num_elems, num_prior_match, num_matched, num_fallback, num_ambiguous, num_skipped, num_failed, num_zero_candidates))
 
-    if 'geonameid' in f['properties'] and f['properties']['geonameid'] and usePriorGeonamesConcordance:
+    if geonameid_output_column in f['properties'] and f['properties'][geonameid_output_column] and usePriorGeonamesConcordance:
       pass
     else:
       # Make a shapely object from the dict.
@@ -263,7 +266,7 @@ def main():
           num_fallback += 1
 
         if len(final_matches) == 0:
-          f['properties']['geonameid'] = None
+          f['properties'][geonameid_output_column] = None
           failureLogger.error(u'found 0 matches for %s' % (get_feature_debug(f)))
           for m in rows:
             failureLogger.error('\t' + geoname_debug_str(m))
@@ -272,15 +275,14 @@ def main():
           m = final_matches[0]
           matchLogger.debug(u'found 1 match for %s:' % (get_feature_debug(f)))
           matchLogger.debug('\t' + geoname_debug_str(m))
-          f['properties']['geonameid'] = ','.join([get_geoname_id(m) for m in final_matches])
+          f['properties'][geonameid_output_column] = ','.join([get_geoname_id(m) for m in final_matches])
           num_matched += 1
         elif len(final_matches) > 1:
           ambiguousLogger.error(u'found multiple final_matches for %s:' % (get_feature_debug(f)))
           for m in final_matches:
             ambiguousLogger.error('\t' + geoname_debug_str(m))
-          f['properties']['geonameid'] = ','.join([get_geoname_id(m) for m in final_matches])
+          f['properties'][geonameid_output_column] = ','.join([get_geoname_id(m) for m in final_matches])
           num_ambiguous += 1
       output.write(f)
-
 
 main()
