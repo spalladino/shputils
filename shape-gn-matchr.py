@@ -83,7 +83,7 @@ def levenshtein(a,b):
 
 
 format = '%(name)s - %(levelname)s - %(message)s'
-logging.basicConfig(level=logging.INFO, filename='debug.log', format=format)
+logging.basicConfig(level=logging.INFO, filename='sdebug.log', format=format)
 
 logger = logging.getLogger('gn_matcher')
 
@@ -122,7 +122,7 @@ def hacks(n):
 
 def get_feature_names(f):
   feature_names = filter(None, [f['properties'][col] for col in shp_name_cols])
-  if f['properties'][shp_cc_col] == 'DE':
+  if shp_cc_col and f['properties'][shp_cc_col] == 'DE':
     feature_names = [re.sub(' \(.*\)', '', n) for n in feature_names]
   feature_names = [remove_accents(n).lower() for n in feature_names]
 
@@ -183,8 +183,14 @@ def get_geoname_fcode(gn):
 def geoname_debug_str(gn):
   return u"%s %s %s %s" % (get_geoname_name(gn), get_geoname_id(gn), get_geoname_fclass(gn), get_geoname_fcode(gn))
 
+def get_feature_cc(f):
+  if shp_cc_col:
+    return f['properties'][shp_cc_col]
+  else:
+    return 'XX'
+
 def get_feature_debug(f):
-  return u"%s %s  (%s)" % (get_feature_name(f), f['properties'][shp_cc_col], shape(f['geometry']).bounds)
+  return u"%s %s  (%s)" % (get_feature_name(f), get_feature_cc(f), shape(f['geometry']).bounds)
 
 
 def bbox_polygon(bbox):
