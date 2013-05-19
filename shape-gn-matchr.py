@@ -20,6 +20,11 @@ import unicodedata
 from collections import defaultdict
 from optparse import OptionParser
 
+
+from shapely import speedups
+if speedups.available:
+  speedups.enable()
+
 parser = OptionParser(usage="""%prog [options]""")
 parser.add_option('--allowed_gn_classes', dest='allowed_gn_classes', default='P', help='comma separated list of allowed geonames feature classes')
 parser.add_option('--allowed_gn_codes', dest='allowed_gn_codes', default='', help='comma separated list of allowed geonames feature codes')
@@ -27,7 +32,7 @@ parser.add_option('--fallback_allowed_gn_classes', dest='fallback_allowed_gn_cla
 parser.add_option('--fallback_allowed_gn_codes', dest='fallback_allowed_gn_codes', default='ADM4', help='comma separated list of fallback_allowed geonames feature codes')
 
 parser.add_option('--shp_name_keys', dest='name_keys', default='qs_loc,qs_loc_alt', help='comma separated list of keys in shapefile to use for feature name')
-parser.add_option('--shp_cc_key', dest='cc_key', default='qs_cc', help='shapefile column to find countrycode')
+parser.add_option('--shp_cc_key', dest='cc_key', default=None, help='shapefile column to find countrycode')
 
 parser.add_option('--dbname', dest='dbname', default='geonames', help='postgres dbname')
 parser.add_option('--dbuser', dest='dbuser', default='postgres', help='postgres user')
@@ -123,7 +128,7 @@ def hacks(n):
 
 def get_feature_names(f):
   feature_names = filter(None, [f['properties'][col] for col in shp_name_cols])
-  if shp_cc_col and f['properties'][shp_cc_col] == 'DE':
+  if get_feature_cc(f) == 'DE':
     feature_names = [re.sub(' \(.*\)', '', n) for n in feature_names]
   feature_names = [remove_accents(n).lower() for n in feature_names]
 
@@ -191,7 +196,12 @@ def get_feature_cc(f):
     return 'XX'
 
 def get_feature_debug(f):
-  return u"%s %s  (%s)" % (get_feature_name(f), get_feature_cc(f), shape(f['geometry']).bounds)
+  res =  u"%s %s " % (get_feature_name(f), get_feature_cc(f))
+  try:
+    res += "%s" % shape(f['geometry']).bounds
+  except:
+    pass
+  return res
 
 
 def bbox_polygon(bbox):
@@ -233,9 +243,12 @@ def main():
   num_prior_match = 0
   num_no_name = 0
 
+  def print_status(i):
+    sys.stderr.write('finished %d of %d (prior_matches %s success %s (fallback: %s), ambiguous: %s, skipped %s, failed %s (no-name %s, zero-candidates: %s))\n' % (i, num_elems, num_prior_match, num_matched, num_fallback, num_ambiguous, num_skipped, num_failed, num_no_name, num_zero_candidates))
+
   for i,f in enumerate(inputIter):
     if (i % 1000) == 0:
-      sys.stderr.write('finished %d of %d (prior_matches %s success %s (fallback: %s), ambiguous: %s, skipped %s, failed %s (no-name %s, zero-candidates: %s))\n' % (i, num_elems, num_prior_match, num_matched, num_fallback, num_ambiguous, num_skipped, num_failed, num_no_name, num_zero_candidates))
+      print_status(i)
 
     if geonameid_output_column in f['properties'] and f['properties'][geonameid_output_column] and usePriorGeonamesConcordance:
       pass
@@ -243,12 +256,18 @@ def main():
       num_no_name += 1
     else:
       # Make a shapely object from the dict.
-      geom = shape(f['geometry'])
-      if not geom.is_valid:
+      try:
+        geom_type = f["geometry"]["type"] 
+        geom = shape(f['geometry'])
+      except:
+        print 'failed to parse geometry: %s' % f['geometry']
+        geom = None
+
+      if geom and not geom.is_valid:
         # Use the 0-buffer polygon cleaning trick
         clean = geom.buffer(0.0)
         geom = clean
-      if f["geometry"]["type"] not in ('Polygon', 'MultiPolygon'):
+      if (geom is None) or (f is None) or f["geometry"]["type"] not in ('Polygon', 'MultiPolygon'):
         print 'skipping %s due to it not being a polygon -- you could fix this with a radius if you wanted' % get_feature_debug(f)
         num_skipped += 1
       elif geom.is_valid:
@@ -325,6 +344,13 @@ def main():
             ambiguousLogger.error('\t' + geoname_debug_str(m))
           f['properties'][geonameid_output_column] = ','.join([get_geoname_id(m) for m in final_matches])
           num_ambiguous += 1
-      output.write(f)
+      try:
+        output.write(f)
+      except:
+        import traceback
+        traceback.print_exc()
+        print 'soldiering on'
+  print_status(i)
+  output.close()
 
 main()
