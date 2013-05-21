@@ -307,6 +307,13 @@ def main():
         if len(rows) == 0:
           failureLogger.error(u'found 0 candidates for %s %s' % (get_feature_debug(f), geom.bounds))
           num_zero_candidates += 1
+        if len(rows) > 2000:
+          print u'oversized result set: %s rows for %s' % (len(rows), get_feature_debug(f))
+          failureLogger.error(u'oversized result set: %s rows for %s' % (len(rows), get_feature_debug(f)))
+          if len(rows) > 10000:
+            print "giving up on this one"
+            failureLogger.error(u'giving up on: %s rows for %s' % (len(rows), get_feature_debug(f)))
+            rows = []
         for gn_candidate in rows:
           (doesMatch, distance) = does_feature_match(f, gn_candidate)
           if doesMatch:
