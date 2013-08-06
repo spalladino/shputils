@@ -10,6 +10,7 @@ from shapely.geometry import Point, Polygon
 from fiona import collection
 
 import itertools
+import traceback
 
 import psycopg2
 import psycopg2.extras
@@ -33,6 +34,7 @@ parser.add_option('--fallback_allowed_gn_codes', dest='fallback_allowed_gn_codes
 
 parser.add_option('--shp_name_keys', dest='name_keys', default='qs_loc,qs_loc_alt', help='comma separated list of keys in shapefile to use for feature name')
 parser.add_option('--shp_cc_key', dest='cc_key', default=None, help='shapefile column to find countrycode')
+parser.add_option('--radius', dest='radius', default=None, type='float', help='optional radius in meters to blow out point features')
 
 parser.add_option('--dbname', dest='dbname', default='geonames', help='postgres dbname')
 parser.add_option('--dbuser', dest='dbuser', default='postgres', help='postgres user')
@@ -40,6 +42,10 @@ parser.add_option('--dbpass', dest='dbpass', default='xxx', help='postgres passw
 parser.add_option('--dbhost', dest='dbhost', default='localhost', help='postgres host')
 parser.add_option('--dbtable', dest='dbtable', default='geoname', help='postgres table')
 parser.add_option('--db_geom_col', dest='db_geom_col', default='the_geom', help='postgres column with geo index')
+parser.add_option('--gn_output_col', dest='geonameid_output_column', default='gs_gn_id', help='column to output geonameid match to')
+parser.add_option('--skip_existing_matches', action="store_true", dest='skip_existing_matches', default=True, help='skip features that already have a value in gn_output_col')
+parser.add_option('--noskip_existing_matches', action="store_false", dest='skip_existing_matches', default=True, help='skip features that already have a value in gn_output_col')
+
 
 (options, args) = parser.parse_args()
 
@@ -54,16 +60,12 @@ allowed_gn_codes = options.allowed_gn_codes.split(',')
 fallback_allowed_gn_classes = options.fallback_allowed_gn_classes.split(',')
 fallback_allowed_gn_codes = options.fallback_allowed_gn_codes.split(',')
 
-geonameid_output_column = 'qs_gn_id' 
-
 buffer_expand = 0.1
  
 inputFile = args[0]
 outputFile = args[1]
 # set to 0 or None to take all
 maxFeaturesToProcess = 0
-
-usePriorGeonamesConcordance = True
 
 def take(n, iterable):
   return itertools.islice(iterable, n)
@@ -109,6 +111,14 @@ def remove_diacritics(char):
     return unicodedata.lookup(desc)
 
 def remove_accents(input_str):
+    try:
+      if type(input_str) == str:
+        input_str = input_str.decode('utf-8')
+    except:
+      print 'failed to convert to unicode'
+      print input_str
+      print traceback.print_exc()
+
     nkfd_form = unicodedata.normalize('NFKD', input_str)
     return u"".join([c for c in nkfd_form if not unicodedata.combining(c)])
 
@@ -118,18 +128,19 @@ def hacks(n):
   n = n.lower()
   # fix german name weirndesses
   n = n.replace(u'(rhld.)', u'')
+  n = n.replace(u'([A-Z])', u'')
   n = n.replace(u', stadt', u'')
   n = n.replace(u'am main', u'')
   n = n.replace(u'st.', u'saint')
   n = n.replace(u'ste.', u'sainte')
   n = n.replace(u'ß', u'ss')
   n = n.replace(u'es ', u'')
+  n = n.replace(u' County', u'')
   return n
 
 def get_feature_names(f):
   feature_names = filter(None, [f['properties'][col] for col in shp_name_cols])
-  if get_feature_cc(f) == 'DE':
-    feature_names = [re.sub(' \(.*\)', '', n) for n in feature_names]
+  feature_names = [re.sub(' \(.*\)', '', n) for n in feature_names]
   feature_names = [remove_accents(n).lower() for n in feature_names]
 
   # hack specific to some input data that looks like "Navoculas,Los"
@@ -159,7 +170,7 @@ def does_feature_match(f, gn_candidate):
     for gn_name in candidate_names:
       distance = levenshtein(f_name, gn_name)
       logger.debug(u'%s vs %s -- distance %d' % (f_name, gn_name, distance))
-      if distance <= 1 or ((distance*1.0) / len(f_name) < 0.14):
+      if distance <= 1 or ((distance*1.0) / len(f_name) < 0.20):
         matchLogger.debug(u'%s vs %s -- distance %d -- GOOD ENOUGH' % (f_name, gn_name, distance))
         return (True, distance)
       else:
@@ -198,9 +209,11 @@ def get_feature_cc(f):
 def get_feature_debug(f):
   res =  u"%s %s " % (get_feature_name(f), get_feature_cc(f))
   try:
-    res += "%s" % shape(f['geometry']).bounds
+    res += (u"%s" % (shape(f['geometry']).bounds,))
   except:
-    pass
+    import traceback
+    traceback.print_exc()
+    res += (u" null geom? %s" % f['geometry'])
   return res
 
 
@@ -222,7 +235,7 @@ def main():
   input = collection(inputFile, "r")
 
   newSchema = input.schema.copy()
-  newSchema['properties'][geonameid_output_column] = 'str:1000'
+  newSchema['properties'][options.geonameid_output_column] = 'str:1000'
 
   output = collection(
     outputFile, 'w', 'ESRI Shapefile', newSchema, crs=input.crs, encoding='utf-8')
@@ -236,21 +249,26 @@ def main():
     num_elems = len(inputIter)
   num_matched = 0
   num_failed = 0
-  num_skipped = 0
   num_ambiguous = 0
   num_fallback = 0
   num_zero_candidates = 0
   num_prior_match = 0
   num_no_name = 0
+  num_bad_geom = 0
 
-  def print_status(i):
-    sys.stderr.write('finished %d of %d (prior_matches %s success %s (fallback: %s), ambiguous: %s, skipped %s, failed %s (no-name %s, zero-candidates: %s))\n' % (i, num_elems, num_prior_match, num_matched, num_fallback, num_ambiguous, num_skipped, num_failed, num_no_name, num_zero_candidates))
+  def print_status(num):
+    sys.stderr.write('finished %d of %d (prior_matches %s success %s (fallback: %s), ambiguous: %s, failed %s (no-name %s, bad-geom: %s, zero-candidates: %s))\n' % (num, num_elems, num_prior_match, num_matched, num_fallback, num_ambiguous, num_failed, num_no_name, num_bad_geom, num_zero_candidates))
 
+  seen = 0
   for i,f in enumerate(inputIter):
+    seen = i + 1
     if (i % 1000) == 0:
       print_status(i)
 
-    if geonameid_output_column in f['properties'] and f['properties'][geonameid_output_column] and usePriorGeonamesConcordance:
+    if (options.geonameid_output_column in f['properties']
+        and f['properties'][options.geonameid_output_column]
+        and options.skip_existing_matches):
+      num_prior_match += 1
       pass
     elif not get_feature_name(f):
       num_no_name += 1
@@ -261,16 +279,22 @@ def main():
         geom = shape(f['geometry'])
       except:
         print 'failed to parse geometry: %s' % f['geometry']
+        num_bad_geom += 1
         geom = None
 
       if geom and not geom.is_valid:
         # Use the 0-buffer polygon cleaning trick
         clean = geom.buffer(0.0)
         geom = clean
-      if (geom is None) or (f is None) or f["geometry"]["type"] not in ('Polygon', 'MultiPolygon'):
+      if (geom is None) or (f is None):
+        print 'skipping %s due to missing_geom -- you could fix this with a radius if you wanted' % get_feature_debug(f)
+      if f["geometry"]["type"] not in ('Polygon', 'MultiPolygon') and not options.radius:
         print 'skipping %s due to it not being a polygon -- you could fix this with a radius if you wanted' % get_feature_debug(f)
-        num_skipped += 1
+        num_bad_geom += 1
       elif geom.is_valid:
+        if f["geometry"]["type"] == 'Point':
+          geom = geom.buffer(0.00001 * options.radius)
+
         matches = defaultdict(list)
         failures = []
         
@@ -333,8 +357,12 @@ def main():
           final_matches = fallback_matches
           num_fallback += 1
 
+        priorMatch = None
+        if (options.geonameid_output_column in f['properties'] and f['properties'][options.geonameid_output_column]):
+          priorMatch = str(f['properties'][options.geonameid_output_column]).replace('.0', '')
+
         if len(final_matches) == 0:
-          f['properties'][geonameid_output_column] = None
+          f['properties'][options.geonameid_output_column] = None
           failureLogger.error(u'found 0 matches for %s' % (get_feature_debug(f)))
           for m in rows:
             failureLogger.error('\t' + geoname_debug_str(m))
@@ -343,21 +371,22 @@ def main():
           m = final_matches[0]
           matchLogger.debug(u'found 1 match for %s:' % (get_feature_debug(f)))
           matchLogger.debug('\t' + geoname_debug_str(m))
-          f['properties'][geonameid_output_column] = ','.join([get_geoname_id(m) for m in final_matches])
+          f['properties'][options.geonameid_output_column] = ','.join([get_geoname_id(m) for m in final_matches])
           num_matched += 1
         elif len(final_matches) > 1:
           ambiguousLogger.error(u'found multiple final_matches for %s:' % (get_feature_debug(f)))
           for m in final_matches:
             ambiguousLogger.error('\t' + geoname_debug_str(m))
-          f['properties'][geonameid_output_column] = ','.join([get_geoname_id(m) for m in final_matches])
+          f['properties'][options.geonameid_output_column] = ','.join([get_geoname_id(m) for m in final_matches])
           num_ambiguous += 1
+
       try:
         output.write(f)
       except:
         import traceback
         traceback.print_exc()
         print 'soldiering on'
-  print_status(i)
+  print_status(seen)
   output.close()
 
 main()
