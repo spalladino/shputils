@@ -232,40 +232,16 @@ def bbox_polygon(bbox):
   else:
     None
 
-inJsonMode = False
-features = []
-input = None
-output = None
-
-def outputFeature(f):
-  if inJsonMode:
-    features.append(f)
-  else:
-    output.write(f)
-
-def closeOutput():
-  if inJsonMode:
-    input['features'] = features
-    output.write(json.dumps(input))
-  else:
-    output.close()
-
 def main():
-  global inJsonMode, features, input, output
-  if 'json' in inputFile:
-    features = []
-    inJsonMode = True
-    input = json.load(open(inputFile))
-    inputIter = input['features']
-    output = open(outputFile, 'w')
-  else:
-    inJsonMode = False
-    input = fiona.collection(inputFile, "r")
-    newSchema = input.schema.copy()
-    newSchema['properties'][options.geonameid_output_column] = 'str:1000'
-    output = fiona.collection(
-      outputFile, 'w', 'ESRI Shapefile', newSchema, crs=input.crs, encoding='utf-8')
-    inputIter = input
+  input = fiona.open(inputFile, "r")
+  newSchema = input.schema.copy()
+  newSchema['properties'][options.geonameid_output_column] = 'str:1000'
+  outputFormat = 'ESRI Shapefile'
+  if 'json' in outputFile:
+    outputFormat = 'GeoJSON'
+  output = fiona.open(
+    outputFile, 'w', outputFormat, newSchema, crs=input.crs, encoding='utf-8')
+  inputIter = input
 
   if maxFeaturesToProcess:
     inputIter = take(maxFeaturesToProcess, inputIter)
@@ -347,7 +323,7 @@ def main():
           rowcount = cur.rowcount
           if rowcount > 2000:
             print u'oversized result set: %s rows for %s' % (cur.rowcount, get_feature_debug(f))
-            failureLogger.error(u'oversized result set: %s rows for %s' % (len(rows), get_feature_debug(f)))
+            failureLogger.error(u'oversized result set: %s rows for %s' % (cur.rowcount, get_feature_debug(f)))
           if rowcount > 10000:
             print 'giving up on this'
             rows = []
@@ -407,13 +383,12 @@ def main():
           num_ambiguous += 1
 
       try:
-        outputFeature(f)
+        output.write(f)
       except:
         import traceback
         traceback.print_exc()
         print 'soldiering on'
   print_status(seen)
-  closeOutput()
   output.close()
 
 main()
