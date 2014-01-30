@@ -3,11 +3,12 @@
 
 import logging
 import sys
+import json
 
 from shapely.geometry import mapping, shape
 from shapely.geometry import Point, Polygon
 
-from fiona import collection
+import fiona
 
 import itertools
 import traceback
@@ -42,7 +43,7 @@ parser.add_option('--dbpass', dest='dbpass', default='xxx', help='postgres passw
 parser.add_option('--dbhost', dest='dbhost', default='localhost', help='postgres host')
 parser.add_option('--dbtable', dest='dbtable', default='geoname', help='postgres table')
 parser.add_option('--db_geom_col', dest='db_geom_col', default='the_geom', help='postgres column with geo index')
-parser.add_option('--gn_output_col', dest='geonameid_output_column', default='gs_gn_id', help='column to output geonameid match to')
+parser.add_option('--gn_output_col', dest='geonameid_output_column', default='qs_gn_id', help='column to output geonameid match to')
 parser.add_option('--skip_existing_matches', action="store_true", dest='skip_existing_matches', default=True, help='skip features that already have a value in gn_output_col')
 parser.add_option('--noskip_existing_matches', action="store_false", dest='skip_existing_matches', default=True, help='skip features that already have a value in gn_output_col')
 
@@ -231,18 +232,43 @@ def bbox_polygon(bbox):
   else:
     None
 
+inJsonMode = False
+features = []
+input = None
+output = None
+
+def outputFeature(f):
+  if inJsonMode:
+    features.append(f)
+  else:
+    output.write(f)
+
+def closeOutput():
+  if inJsonMode:
+    output.write(json.dumps(input))
+    features.append(f)
+  else:
+    output.close()
+
 def main():
-  input = collection(inputFile, "r")
+  global inJsonMode, features, input, output
+  if 'json' in inputFile:
+    features = []
+    inJsonMode = True
+    input = json.load(open(inputFile))
+    inputIter = input['features']
+    output = open(outputFile, 'w')
+  else:
+    inJsonMode = False
+    input = fiona.collection(inputFile, "r")
+    newSchema = input.schema.copy()
+    newSchema['properties'][options.geonameid_output_column] = 'str:1000'
+    output = fiona.collection(
+      outputFile, 'w', 'ESRI Shapefile', newSchema, crs=input.crs, encoding='utf-8')
+    inputIter = input
 
-  newSchema = input.schema.copy()
-  newSchema['properties'][options.geonameid_output_column] = 'str:1000'
-
-  output = collection(
-    outputFile, 'w', 'ESRI Shapefile', newSchema, crs=input.crs, encoding='utf-8')
-
-  inputIter = input
   if maxFeaturesToProcess:
-    inputIter = take(maxFeaturesToProcess, input)
+    inputIter = take(maxFeaturesToProcess, inputIter)
   if maxFeaturesToProcess:
     num_elems = maxFeaturesToProcess 
   else:
@@ -381,12 +407,13 @@ def main():
           num_ambiguous += 1
 
       try:
-        output.write(f)
+        outputFeature(f)
       except:
         import traceback
         traceback.print_exc()
         print 'soldiering on'
   print_status(seen)
+  closeOutput()
   output.close()
 
 main()
