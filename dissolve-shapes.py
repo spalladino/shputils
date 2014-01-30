@@ -31,6 +31,8 @@ parser.add_option('-f', '--fields', dest='fields', metavar='f1,f2,f3',
 parser.add_option('-c', '--collectors', dest='collectors', action="append", default=[],
   metavar='inputKey:op:outputKey',
   help='arbitrarily collect fields across group by. op is one of %s' % (','.join(groupByOperations.keys())))
+parser.add_option('-s', '--skip_failures', dest='skip_failures', action="store_true", default=False,
+                  help='skip union failures')
 
 (options, args) = parser.parse_args()
 
@@ -140,7 +142,24 @@ def processInput():
       options.output, 'w', 'ESRI Shapefile', newSchema, crs=inputCRS, encoding='utf-8') as output:
     output.encoding = 'utf-8'
     for key, value in geometryBuckets.items():
-      merged = cascaded_union(value)
+      try:
+        merged = cascaded_union(value)
+      except Exception as inst:
+        try:
+          print "coluldn't create a cascaded union for %s, trying a linear union" % key
+          merged = value[0]
+          for v in value[1:]:
+            merged = merged.union(v)
+        except Exception as inst2:
+          import traceback
+          if options.skip_failures:
+            print inst2
+            print "coluldn't create a merged union for %s" % key
+            print "continuing on"
+          else:
+            print "coluldn't create a merged union for %s" % key
+            raise inst2
+
       properties = json.loads(key)
       #TODO: multiple collectors
       #TODO: * collectors
