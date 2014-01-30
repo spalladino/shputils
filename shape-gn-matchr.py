@@ -245,8 +245,8 @@ def outputFeature(f):
 
 def closeOutput():
   if inJsonMode:
+    input['features'] = features
     output.write(json.dumps(input))
-    features.append(f)
   else:
     output.close()
 
