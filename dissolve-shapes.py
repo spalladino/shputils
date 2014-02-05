@@ -5,7 +5,7 @@ from shapely.wkb import loads
 from collections import defaultdict
 from shapely.geometry import mapping, shape
 from shapely.ops import cascaded_union
-from fiona import collection
+import fiona
 import shapely.speedups
 import json
 import sys
@@ -73,7 +73,7 @@ def processInput():
   layer = ds.GetLayer(0)
   featureDefinition = layer.GetLayerDefn()
 
-  input = collection(options.input, 'r')
+  input = fiona.open(options.input, 'r')
   if not options.fields and not options.all:
     print "no matching fields specified, and --all not specified, please specify some with -f"
     sys.exit(1)
@@ -90,8 +90,12 @@ def processInput():
   
   
   clist = list(options.collectors)
+  clist = sum([c.split(',') for c in clist], [])
+  new_collectors = []
   for i, c in enumerate(clist):
-    if c[0] == '*':
+    if len(c.split(':')) == 1:
+      new_collectors.append('%s:join:%s' % (c, c))
+    elif c[0] == '*':
       # remove special keyword filter from list
       del clist[i]
       # push all fields into list
@@ -100,7 +104,11 @@ def processInput():
         # formated like: origfield:operation:outfield_operation
         x = field + ":" + c[2:] + ":" + c[2:].upper() + "_" + field
         print x
-        clist.append(x)
+        new_collectors.append(x)
+    else:
+      new_collectors.append(c)
+
+  clist = new_collectors
               
   print 'collectors: %s' % clist
   
@@ -138,35 +146,37 @@ def processInput():
  
   print 'saw %d features, made %d dissolved features' % (featuresSeen, len(geometryBuckets))
 
-  with collection(
-      options.output, 'w', 'ESRI Shapefile', newSchema, crs=inputCRS, encoding='utf-8') as output:
-    output.encoding = 'utf-8'
-    for key, value in geometryBuckets.items():
+  outputFormat = 'ESRI Shapefile'
+  if 'json' in options.output:
+    outputFormat = 'GeoJSON'
+  output = fiona.open(
+    options.output, 'w', outputFormat, newSchema, crs=inputCRS, encoding='utf-8')
+  for key, value in geometryBuckets.items():
+    try:
+      merged = cascaded_union(value)
+    except Exception as inst:
       try:
-        merged = cascaded_union(value)
-      except Exception as inst:
-        try:
-          print "coluldn't create a cascaded union for %s, trying a linear union" % key
-          merged = value[0]
-          for v in value[1:]:
-            merged = merged.union(v)
-        except Exception as inst2:
-          import traceback
-          if options.skip_failures:
-            print inst2
-            print "coluldn't create a merged union for %s" % key
-            print "continuing on"
-          else:
-            print "coluldn't create a merged union for %s" % key
-            raise inst2
+        print "coluldn't create a cascaded union for %s, trying a linear union" % key
+        merged = value[0]
+        for v in value[1:]:
+          merged = merged.union(v)
+      except Exception as inst2:
+        import traceback
+        if options.skip_failures:
+          print inst2
+          print "coluldn't create a merged union for %s" % key
+          print "continuing on"
+        else:
+          print "coluldn't create a merged union for %s" % key
+          raise inst2
 
-      properties = json.loads(key)
-      #TODO: multiple collectors
-      #TODO: * collectors
-      collectors.outputMatchesToDict(key, properties)
-      output.write({
-        'properties': properties,
-        'geometry': mapping(merged)
-      })
+    properties = json.loads(key)
+    #TODO: multiple collectors
+    #TODO: * collectors
+    collectors.outputMatchesToDict(key, properties)
+    output.write({
+      'properties': properties,
+      'geometry': mapping(merged)
+    })
 
 processInput()

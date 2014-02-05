@@ -19,6 +19,7 @@ groupByOperations = {
   'join': (lambda x: ','.join(x), 'str'),
   'first': (lambda x: x[0],),
   'last': (lambda x: x[-1],),
+  'uniq': (lambda x: ','.join(list(set(x))), 'str'),
 }
 def getGroupByOp(op):
   o = groupByOperations[op]
