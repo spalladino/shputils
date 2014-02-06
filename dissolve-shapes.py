@@ -178,5 +178,6 @@ def processInput():
       'properties': properties,
       'geometry': mapping(merged)
     })
+  output.close()
 
 processInput()
