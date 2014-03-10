@@ -22,12 +22,20 @@ import unicodedata
 from collections import defaultdict
 from optparse import OptionParser
 
+import urllib, urllib2
+import json
 
 from shapely import speedups
 if speedups.available:
   speedups.enable()
 
 parser = OptionParser(usage="""%prog [options]""")
+parser.add_option('--create', dest='create', default=False, action='store_true', help='if set, create geonames-like output for missing features')
+parser.add_option('--create_code', dest='create_code', default='', help='if set, create venues with this feature code')
+parser.add_option('--create_username', dest='create_username', default='demo', help='search geonames with this username')
+parser.add_option('--create_parent', dest='create_parent', default='demo', help='search for this place as the parent as all found features')
+parser.add_option('--create_output_file', dest='create_output_file', ='', help='geonames output file')
+
 parser.add_option('--allowed_gn_classes', dest='allowed_gn_classes', default='P', help='comma separated list of allowed geonames feature classes')
 parser.add_option('--allowed_gn_codes', dest='allowed_gn_codes', default='', help='comma separated list of allowed geonames feature codes')
 parser.add_option('--fallback_allowed_gn_classes', dest='fallback_allowed_gn_classes', default='', help='comma separated list of fallback_allowed geonames feature classes')
@@ -88,7 +96,7 @@ def levenshtein(a,b):
             if a[j-1] != b[i-1]:
                 change = change + 1
             current[j] = min(add, delete, change)
-    return current[n]
+    return current[n] 
 
 
 format = '%(name)s - %(levelname)s - %(message)s'
@@ -139,8 +147,53 @@ def hacks(n):
   n = n.replace(u' County', u'')
   return n
 
+geonames_create_output_file = ''
+geonames_create_parent = defaultdict(str)
+if options.create:
+  import csv
+  geonames_create_output_file = csv.writer(open(options.create_output_file, 'a'), delimiter = '\t')
+  response = urllib2.urlopen(
+    'http://api.geonames.org/postalcodesearchjson?placename=%(query)s&maxrows=10&username=%(username)s', {
+      'query': options.create_parent,
+      'username': options.create_username
+    }
+  )
+  geonames_create_parent = defaultdict(str, json.load(response))
+
+def do_create(f):
+  names = get_feature_names(f)
+  centroid = shape(f['geometry']).centroid
+  #response = urllib2.urlopen('http://api.geonames.org/findNearbyPlaceNameJSON?lat=%(lat)s&lng=%(lng)s&style=full&username=%(username)s' % {
+  #  'lat': centroid.y,
+  #  'lng': centroid.x,
+  #  'username': options.create_username})
+  data = defaultdict(str, json.load(response))
+  geonames_create_output_file.writerow([
+    0,
+    names[0],
+    names[0],
+    ','.join(names),
+    centroid.y,
+    centroid.x,
+    options.create_code[0],
+    options.create_code,
+    data['countryCode'],
+    '', # cc2
+    geonames_create_parent['adminCode1'],
+    geonames_create_parent['adminCode2'],
+    geonames_create_parent['adminCode3'],
+    geonames_create_parent['adminCode4'],
+    '', # pop
+    '', # dem
+    '', # tz
+    '' # moddate
+  ])
+
 def get_feature_names(f):
-  feature_names = filter(None, [f['properties'][col] for col in shp_name_cols])
+  return filter(None, [f['properties'][col] for col in shp_name_cols])
+
+def get_feature_names_for_matching(f):
+  feature_names = get_feature_names(f)
   feature_names = [re.sub(' \(.*\)', '', n) for n in feature_names]
   feature_names = [remove_accents(n).lower() for n in feature_names]
 
@@ -164,7 +217,7 @@ def get_geoname_names_for_matching(gn_candidate):
 def does_feature_match(f, gn_candidate):
   point = Point(gn_candidate['latitude'], gn_candidate['longitude'])
   candidate_names = get_geoname_names_for_matching(gn_candidate)
-  feature_names = get_feature_names(f)
+  feature_names = get_feature_names_for_matching(f)
 
   # for each input name in the shape, see if we have a match in a geoname feature
   for f_name in feature_names:
@@ -369,6 +422,9 @@ def main():
           for m in rows:
             failureLogger.error('\t' + geoname_debug_str(m))
           num_failed += 1
+          if options.create:
+            do_create(f)
+          
         elif len(final_matches) == 1:
           m = final_matches[0]
           matchLogger.debug(u'found 1 match for %s:' % (get_feature_debug(f)))
