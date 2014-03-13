@@ -29,12 +29,13 @@ from shapely import speedups
 if speedups.available:
   speedups.enable()
 
+from unicodecsv import UnicodeWriter
+
 parser = OptionParser(usage="""%prog [options]""")
-parser.add_option('--create', dest='create', default=False, action='store_true', help='if set, create geonames-like output for missing features')
-parser.add_option('--create_code', dest='create_code', default='', help='if set, create venues with this feature code')
-parser.add_option('--create_username', dest='create_username', default='demo', help='search geonames with this username')
-parser.add_option('--create_parent', dest='create_parent', default='demo', help='search for this place as the parent as all found features')
-parser.add_option('--create_output_file', dest='create_output_file', ='', help='geonames output file')
+parser.add_option('--annotate', dest='annotate', default=False, action='store_true', help='if set, annotate geonames-like output for missing features')
+parser.add_option('--annotate_code', dest='annotate_code', default='', help='if set, annotate venues with this feature code')
+parser.add_option('--annotate_username', dest='annotate_username', default='demo', help='search geonames with this username')
+parser.add_option('--annotate_parent', dest='annotate_parent', default='demo', help='search for this place as the parent as all found features')
 
 parser.add_option('--allowed_gn_classes', dest='allowed_gn_classes', default='P', help='comma separated list of allowed geonames feature classes')
 parser.add_option('--allowed_gn_codes', dest='allowed_gn_codes', default='', help='comma separated list of allowed geonames feature codes')
@@ -51,7 +52,7 @@ parser.add_option('--dbpass', dest='dbpass', default='xxx', help='postgres passw
 parser.add_option('--dbhost', dest='dbhost', default='localhost', help='postgres host')
 parser.add_option('--dbtable', dest='dbtable', default='geoname', help='postgres table')
 parser.add_option('--db_geom_col', dest='db_geom_col', default='the_geom', help='postgres column with geo index')
-parser.add_option('--gn_output_col', dest='geonameid_output_column', default='qs_gn_id', help='column to output geonameid match to')
+parser.add_option('--gn_output_col', dest='geonameid_output_column', default='geonameid', help='column to output geonameid match to')
 parser.add_option('--skip_existing_matches', action="store_true", dest='skip_existing_matches', default=True, help='skip features that already have a value in gn_output_col')
 parser.add_option('--noskip_existing_matches', action="store_false", dest='skip_existing_matches', default=True, help='skip features that already have a value in gn_output_col')
 
@@ -147,47 +148,55 @@ def hacks(n):
   n = n.replace(u' County', u'')
   return n
 
-geonames_create_output_file = ''
-geonames_create_parent = defaultdict(str)
-if options.create:
-  import csv
-  geonames_create_output_file = csv.writer(open(options.create_output_file, 'a'), delimiter = '\t')
-  response = urllib2.urlopen(
-    'http://api.geonames.org/postalcodesearchjson?placename=%(query)s&maxrows=10&username=%(username)s', {
-      'query': options.create_parent,
-      'username': options.create_username
-    }
-  )
-  geonames_create_parent = defaultdict(str, json.load(response))
+def find_geonames_parent():
+  geocodeUrl = 'http://demo.twofishes.net/?query=%s' % urllib.quote(options.annotate_parent)
+  geocodeResponse = json.load(urllib2.urlopen(geocodeUrl))
+  gnid = None
+  if len(geocodeResponse['interpretations']):
+    interp  = geocodeResponse['interpretations'][0]
+    if not interp['what']:
+      gnid = interp['feature']['ids'][0]['id']
+  if not gnid:
+    print 'Failed to find %s' % options.annotate_parent
+    sys.exit(1)
 
-def do_create(f):
+  url =  'http://api.geonames.org/getJSON?geonameId=%(id)s&username=%(username)s' % {
+      'id': gnid,
+      'username': options.annotate_username
+    }
+  response = urllib2.urlopen(url)
+  return defaultdict(str, json.load(response))
+
+geonames_annotate_parent = defaultdict(str)
+if options.annotate:
+  geonames_annotate_parent = defaultdict(str)
+  for i in xrange(1, 5):
+    geonames_annotate_parent = find_geonames_parent()
+    if geonames_annotate_parent['countryCode'] != '':
+      break
+
+  if geonames_annotate_parent['countryCode'] == '':
+    print('after 5 tries, failed to find parent')
+    print geonames_annotate_parent
+    sys.exit(1)
+
+def geonames_annotate(f):
   names = get_feature_names(f)
   centroid = shape(f['geometry']).centroid
-  #response = urllib2.urlopen('http://api.geonames.org/findNearbyPlaceNameJSON?lat=%(lat)s&lng=%(lng)s&style=full&username=%(username)s' % {
-  #  'lat': centroid.y,
-  #  'lng': centroid.x,
-  #  'username': options.create_username})
-  data = defaultdict(str, json.load(response))
-  geonames_create_output_file.writerow([
-    0,
-    names[0],
-    names[0],
-    ','.join(names),
-    centroid.y,
-    centroid.x,
-    options.create_code[0],
-    options.create_code,
-    data['countryCode'],
-    '', # cc2
-    geonames_create_parent['adminCode1'],
-    geonames_create_parent['adminCode2'],
-    geonames_create_parent['adminCode3'],
-    geonames_create_parent['adminCode4'],
-    '', # pop
-    '', # dem
-    '', # tz
-    '' # moddate
-  ])
+
+  feature_dict = {
+    'lat': centroid.y,
+    'lng': centroid.x,
+    'fclass': options.annotate_code[0],
+    'fcode': options.annotate_code,
+    'countryCode': geonames_annotate_parent['countryCode'],
+    'adminCode1': geonames_annotate_parent['adminCode1'],
+    'adminCode2': geonames_annotate_parent['adminCode2'],
+    'adminCode3': geonames_annotate_parent['adminCode3'],
+    'adminCode4': geonames_annotate_parent['adminCode4']
+  }
+
+  f['properties'] = dict(f['properties'].items() + feature_dict.items())
 
 def get_feature_names(f):
   return filter(None, [f['properties'][col] for col in shp_name_cols])
@@ -273,7 +282,7 @@ def get_feature_debug(f):
 
 def bbox_polygon(bbox):
   """
-  Create Polygon that covers the given bbox.
+  annotate Polygon that covers the given bbox.
   """
   if (len(bbox) == 4):
     return Polygon((
@@ -289,6 +298,20 @@ def main():
   input = fiona.open(inputFile, "r")
   newSchema = input.schema.copy()
   newSchema['properties'][options.geonameid_output_column] = 'str:1000'
+
+  if options.annotate:
+    newSchema['properties'] = dict(newSchema['properties'].items() + {
+        'lat': 'float',
+        'lng': 'float',
+        'fclass': 'str:1',
+        'fcode': 'str:4',
+        'countryCode': 'str:2',
+        'adminCode1': 'str:10',
+        'adminCode2': 'str:10',
+        'adminCode3': 'str:10',
+        'adminCode4': 'str:10'
+      }.items())
+
   outputFormat = 'ESRI Shapefile'
   if 'json' in outputFile:
     outputFormat = 'GeoJSON'
@@ -304,6 +327,7 @@ def main():
     num_elems = len(inputIter)
   num_matched = 0
   num_failed = 0
+  num_annotated = 0
   num_ambiguous = 0
   num_fallback = 0
   num_zero_candidates = 0
@@ -312,7 +336,7 @@ def main():
   num_bad_geom = 0
 
   def print_status(num):
-    sys.stderr.write('finished %d of %d (prior_matches %s success %s (fallback: %s), ambiguous: %s, failed %s (no-name %s, bad-geom: %s, zero-candidates: %s))\n' % (num, num_elems, num_prior_match, num_matched, num_fallback, num_ambiguous, num_failed, num_no_name, num_bad_geom, num_zero_candidates))
+    sys.stderr.write('finished %d of %d (prior_matches %s success %s (fallback: %s), ambiguous: %s, annotated %s, failed %s (no-name %s, bad-geom: %s, zero-candidates: %s))\n' % (num, num_elems, num_prior_match, num_matched, num_fallback, num_ambiguous, num_annotated, num_failed, num_no_name, num_bad_geom, num_zero_candidates))
 
   seen = 0
   for i,f in enumerate(inputIter):
@@ -416,15 +440,16 @@ def main():
         if (options.geonameid_output_column in f['properties'] and f['properties'][options.geonameid_output_column]):
           priorMatch = str(f['properties'][options.geonameid_output_column]).replace('.0', '')
 
+        if options.annotate:
+          geonames_annotate(f)
+
         if len(final_matches) == 0:
           f['properties'][options.geonameid_output_column] = None
           failureLogger.error(u'found 0 matches for %s' % (get_feature_debug(f)))
           for m in rows:
             failureLogger.error('\t' + geoname_debug_str(m))
           num_failed += 1
-          if options.create:
-            do_create(f)
-          
+                  
         elif len(final_matches) == 1:
           m = final_matches[0]
           matchLogger.debug(u'found 1 match for %s:' % (get_feature_debug(f)))
