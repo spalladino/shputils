@@ -101,8 +101,8 @@ def processInput():
       # push all fields into list
       # TODO throw error if more than 2 elements in : separated string (c)
       for field in origFieldNames:
-        # formated like: origfield:operation:outfield_operation
-        x = field + ":" + c[2:] + ":" + c[2:].upper() + "_" + field
+        # formated like: origfield:operation:origfield
+        x = field + ":" + c[2:] + ":" + field
         print x
         new_collectors.append(x)
     else:
