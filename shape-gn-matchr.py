@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/local/bin/python
 # -*- coding: utf-8 -*-
 
 import logging
@@ -32,10 +32,6 @@ if speedups.available:
 from unicodecsv import UnicodeWriter
 
 parser = OptionParser(usage="""%prog [options]""")
-parser.add_option('--annotate', dest='annotate', default=False, action='store_true', help='if set, annotate geonames-like output for missing features')
-parser.add_option('--annotate_code', dest='annotate_code', default='', help='if set, annotate venues with this feature code')
-parser.add_option('--annotate_username', dest='annotate_username', default='demo', help='search geonames with this username')
-parser.add_option('--annotate_parent', dest='annotate_parent', default='demo', help='search for this place as the parent as all found features')
 
 parser.add_option('--allowed_gn_classes', dest='allowed_gn_classes', default='P', help='comma separated list of allowed geonames feature classes')
 parser.add_option('--allowed_gn_codes', dest='allowed_gn_codes', default='', help='comma separated list of allowed geonames feature codes')
@@ -71,7 +67,7 @@ fallback_allowed_gn_classes = options.fallback_allowed_gn_classes.split(',')
 fallback_allowed_gn_codes = options.fallback_allowed_gn_codes.split(',')
 
 buffer_expand = 0.1
- 
+
 inputFile = args[0]
 outputFile = args[1]
 # set to 0 or None to take all
@@ -87,7 +83,7 @@ def levenshtein(a,b):
         # Make sure n <= m, to use O(min(n,m)) space
         a,b = b,a
         n,m = m,n
-        
+
     current = range(n+1)
     for i in range(1,m+1):
         previous, current = current, [i]+[0]*n
@@ -97,7 +93,7 @@ def levenshtein(a,b):
             if a[j-1] != b[i-1]:
                 change = change + 1
             current[j] = min(add, delete, change)
-    return current[n] 
+    return current[n]
 
 
 format = '%(name)s - %(levelname)s - %(message)s'
@@ -148,52 +144,18 @@ def hacks(n):
   n = n.replace(u' County', u'')
   return n
 
-def find_geonames_parent():
-  geocodeUrl = 'http://demo.twofishes.net/?query=%s' % urllib.quote(options.annotate_parent)
-  geocodeResponse = json.load(urllib2.urlopen(geocodeUrl))
-  gnid = None
-  if len(geocodeResponse['interpretations']):
-    interp  = geocodeResponse['interpretations'][0]
-    if not interp['what']:
-      gnid = interp['feature']['ids'][0]['id']
-  if not gnid:
-    print 'Failed to find %s' % options.annotate_parent
-    sys.exit(1)
-
-  url =  'http://api.geonames.org/getJSON?geonameId=%(id)s&username=%(username)s' % {
-      'id': gnid,
-      'username': options.annotate_username
-    }
-  response = urllib2.urlopen(url)
-  return defaultdict(str, json.load(response))
-
-geonames_annotate_parent = defaultdict(str)
-if options.annotate:
-  geonames_annotate_parent = defaultdict(str)
-  for i in xrange(1, 5):
-    geonames_annotate_parent = find_geonames_parent()
-    if geonames_annotate_parent['countryCode'] != '':
-      break
-
-  if geonames_annotate_parent['countryCode'] == '':
-    print('after 5 tries, failed to find parent')
-    print geonames_annotate_parent
-    sys.exit(1)
-
-def geonames_annotate(f):
-  names = get_feature_names(f)
+def geonames_annotate_from_db(f, m):
   centroid = shape(f['geometry']).centroid
-
   feature_dict = {
-    'lat': centroid.y,
-    'lng': centroid.x,
-    'fclass': options.annotate_code[0],
-    'fcode': options.annotate_code,
-    'countryCode': geonames_annotate_parent['countryCode'],
-    'adminCode1': geonames_annotate_parent['adminCode1'],
-    'adminCode2': geonames_annotate_parent['adminCode2'],
-    'adminCode3': geonames_annotate_parent['adminCode3'],
-    'adminCode4': geonames_annotate_parent['adminCode4']
+    'lat': get_geoname_lat(m) or centroid.y,
+    'lng': get_geoname_lng(m) or centroid.x,
+    'fclass': get_geoname_fclass(m),
+    'fcode': get_geoname_fcode(m),
+    'countryCode': get_geoname_cc(m),
+    'adminCode1': get_geoname_admin(m,1),
+    'adminCode2': get_geoname_admin(m,2),
+    'adminCode3': get_geoname_admin(m,3),
+    'adminCode4': get_geoname_admin(m,4)
   }
 
   f['properties'] = dict(f['properties'].items() + feature_dict.items())
@@ -249,16 +211,36 @@ def get_feature_name(f):
     return None
 
 def get_geoname_name(gn):
+  if not gn: return None
   return gn['name'].decode('utf-8')
 
 def get_geoname_id(gn):
+  if not gn: return None
   return str(gn['geonameid'])
 
 def get_geoname_fclass(gn):
+  if not gn: return None
   return (gn['fclass'] or '').decode('utf-8')
 
 def get_geoname_fcode(gn):
+  if not gn: return None
   return (gn['fcode'] or '').decode('utf-8')
+
+def get_geoname_lat(gn):
+  if not gn: return None
+  return float(gn['latitude'])
+
+def get_geoname_lng(gn):
+  if not gn: return None
+  return float(gn['longitude'])
+
+def get_geoname_cc(gn):
+  if not gn: return None
+  return (gn['country'] or '').decode('utf-8')
+
+def get_geoname_admin(gn, index):
+  if not gn: return None
+  return (gn['admin' + str(index)] or '').decode('utf-8')
 
 def geoname_debug_str(gn):
   return u"%s %s %s %s" % (get_geoname_name(gn), get_geoname_id(gn), get_geoname_fclass(gn), get_geoname_fcode(gn))
@@ -297,20 +279,18 @@ def bbox_polygon(bbox):
 def main():
   input = fiona.open(inputFile, "r")
   newSchema = input.schema.copy()
-  newSchema['properties'][options.geonameid_output_column] = 'str:1000'
-
-  if options.annotate:
-    newSchema['properties'] = dict(newSchema['properties'].items() + {
-        'lat': 'float',
-        'lng': 'float',
-        'fclass': 'str:1',
-        'fcode': 'str:4',
-        'countryCode': 'str:2',
-        'adminCode1': 'str:10',
-        'adminCode2': 'str:10',
-        'adminCode3': 'str:10',
-        'adminCode4': 'str:10'
-      }.items())
+  newSchema['properties'] = dict(newSchema['properties'].items() + {
+      options.geonameid_output_column: 'str:1000',
+      'lat': 'float',
+      'lng': 'float',
+      'fclass': 'str:1',
+      'fcode': 'str:4',
+      'countryCode': 'str:2',
+      'adminCode1': 'str:10',
+      'adminCode2': 'str:10',
+      'adminCode3': 'str:10',
+      'adminCode4': 'str:10'
+    }.items())
 
   outputFormat = 'ESRI Shapefile'
   if 'json' in outputFile:
@@ -322,7 +302,7 @@ def main():
   if maxFeaturesToProcess:
     inputIter = take(maxFeaturesToProcess, inputIter)
   if maxFeaturesToProcess:
-    num_elems = maxFeaturesToProcess 
+    num_elems = maxFeaturesToProcess
   else:
     num_elems = len(inputIter)
   num_matched = 0
@@ -354,7 +334,7 @@ def main():
     else:
       # Make a shapely object from the dict.
       try:
-        geom_type = f["geometry"]["type"] 
+        geom_type = f["geometry"]["type"]
         geom = shape(f['geometry'])
       except:
         print 'failed to parse geometry: %s' % f['geometry']
@@ -376,7 +356,7 @@ def main():
 
         matches = defaultdict(list)
         failures = []
-        
+
         poly_bounds = bbox_polygon(geom.bounds)
 
         if not poly_bounds:
@@ -397,6 +377,9 @@ def main():
               tuple(allowed_gn_codes + fallback_allowed_gn_codes)
             )
           )
+
+          matchLogger.debug('expanded bounds: %s' % expanded_bounds)
+
           rowcount = cur.rowcount
           if rowcount > 2000:
             print u'oversized result set: %s rows for %s' % (cur.rowcount, get_feature_debug(f))
@@ -440,27 +423,28 @@ def main():
         if (options.geonameid_output_column in f['properties'] and f['properties'][options.geonameid_output_column]):
           priorMatch = str(f['properties'][options.geonameid_output_column]).replace('.0', '')
 
-        if options.annotate:
-          geonames_annotate(f)
-
         if len(final_matches) == 0:
           f['properties'][options.geonameid_output_column] = None
+          geonames_annotate_from_db(f, None)
           failureLogger.error(u'found 0 matches for %s' % (get_feature_debug(f)))
           for m in rows:
             failureLogger.error('\t' + geoname_debug_str(m))
           num_failed += 1
-                  
+
         elif len(final_matches) == 1:
           m = final_matches[0]
           matchLogger.debug(u'found 1 match for %s:' % (get_feature_debug(f)))
           matchLogger.debug('\t' + geoname_debug_str(m))
-          f['properties'][options.geonameid_output_column] = ','.join([get_geoname_id(m) for m in final_matches])
+          f['properties'][options.geonameid_output_column] = get_geoname_id(m)
+          geonames_annotate_from_db(f, m)
           num_matched += 1
+
         elif len(final_matches) > 1:
           ambiguousLogger.error(u'found multiple final_matches for %s:' % (get_feature_debug(f)))
           for m in final_matches:
             ambiguousLogger.error('\t' + geoname_debug_str(m))
           f['properties'][options.geonameid_output_column] = ','.join([get_geoname_id(m) for m in final_matches])
+          geonames_annotate_from_db(f, None)
           num_ambiguous += 1
 
       try:
